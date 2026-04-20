@@ -1,0 +1,31 @@
+{
+    "dataRoles": [
+        {
+            "displayName": "Category",
+            "name": "category",
+            "kind": "Grouping",
+            "description": "Category field (e.g. dimension to group by)"
+        },
+        {
+            "displayName": "Values",
+            "name": "values",
+            "kind": "Measure",
+            "description": "Measure field (e.g. count, sum)"
+        }
+    ],
+    "objects": {},
+    "dataViewMappings": [
+        {
+            "categorical": {
+                "categories": {
+                    "for": { "in": "category" },
+                    "dataReductionAlgorithm": { "top": { "count": 500 } }
+                },
+                "values": {
+                    "select": [{ "bind": { "to": "values" } }]
+                }
+            }
+        }
+    ],
+    "privileges": []
+}

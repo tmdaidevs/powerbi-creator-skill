@@ -1,6 +1,6 @@
 ---
 name: powerbi-creator
-description: Create, design, and manage Power BI reports and dashboards. Handles report styling, visual creation, layout management, theme injection, conditional formatting, and semantic model querying via the Power BI Design MCP Server.
+description: Create, design, and manage Power BI reports and dashboards. Handles report styling, visual creation, layout management, theme injection, conditional formatting, semantic model querying, and custom visual development via the Power BI Design MCP Server and pbiviz SDK.
 triggers:
   - power bi
   - dashboard
@@ -10,6 +10,9 @@ triggers:
   - pbir
   - fabric
   - semantic model
+  - custom visual
+  - pbiviz
+  - d3
 ---
 
 # Power BI Creator Skill
@@ -111,3 +114,150 @@ You are an expert Power BI report designer and developer. You use the `powerbi-d
 
 **User:** "The colors look wrong"
 → Check if custom theme is injected → `inject_custom_theme` with dataColors palette → Verify
+
+## Custom Visual Development
+
+You can scaffold, build, and package Power BI custom visuals using the `pbiviz` SDK. Custom visuals are TypeScript/D3.js projects that compile to `.pbiviz` files for import into Power BI.
+
+### Prerequisites
+- Node.js 18+
+- `npm install -g powerbi-visuals-tools`
+
+### Scaffold a New Custom Visual
+
+```bash
+pbiviz new <visual-name> --force
+cd <visual-name>
+npm install d3@7 --save
+npm install @types/d3@7 --save-dev
+```
+
+### Project Structure
+```
+<visual-name>/
+├── capabilities.json     ← Data roles (fields the visual accepts)
+├── pbiviz.json           ← Visual metadata (name, GUID, author)
+├── src/
+│   ├── visual.ts         ← Main rendering logic
+│   └── settings.ts       ← Formatting pane settings
+├── style/
+│   └── visual.less       ← CSS styles
+└── assets/
+    └── icon.png          ← Visual icon
+```
+
+### capabilities.json — Define Data Roles
+
+Data roles define what fields the user can drag into the visual:
+
+```json
+{
+  "dataRoles": [
+    {"displayName": "Category", "name": "category", "kind": "Grouping"},
+    {"displayName": "Values", "name": "values", "kind": "Measure"}
+  ],
+  "dataViewMappings": [{
+    "categorical": {
+      "categories": {"for": {"in": "category"}},
+      "values": {"select": [{"bind": {"to": "values"}}]}
+    }
+  }]
+}
+```
+
+For network/graph visuals use multiple grouping roles:
+```json
+{
+  "dataRoles": [
+    {"displayName": "Source", "name": "source", "kind": "Grouping"},
+    {"displayName": "Target", "name": "target", "kind": "Grouping"},
+    {"displayName": "Weight", "name": "weight", "kind": "Measure"}
+  ]
+}
+```
+
+### visual.ts — Rendering Pattern
+
+```typescript
+import powerbi from "powerbi-visuals-api";
+import * as d3 from "d3";
+
+export class Visual implements powerbi.extensibility.visual.IVisual {
+    private svg: d3.Selection<SVGSVGElement, unknown, null, undefined>;
+
+    constructor(options: powerbi.extensibility.visual.VisualConstructorOptions) {
+        this.svg = d3.select(options.element).append("svg");
+    }
+
+    public update(options: powerbi.extensibility.visual.VisualUpdateOptions) {
+        const dataView = options.dataViews?.[0];
+        if (!dataView?.categorical) return;
+
+        const width = options.viewport.width;
+        const height = options.viewport.height;
+        this.svg.attr("viewBox", `0 0 ${width} ${height}`);
+
+        // Extract data from dataView.categorical.categories/values
+        // Render with D3.js
+    }
+
+    public getFormattingModel(): powerbi.visuals.FormattingModel {
+        return { cards: [] };
+    }
+}
+```
+
+### pbiviz.json — Required Fields
+These fields MUST be filled in or the build will fail:
+```json
+{
+  "visual": {
+    "displayName": "My Visual",
+    "description": "What it does",
+    "supportUrl": "https://github.com/...",
+    "gitHubUrl": "https://github.com/..."
+  },
+  "author": {"name": "Author Name", "email": "email@example.com"}
+}
+```
+
+### Build & Package
+
+```bash
+npx pbiviz package
+```
+
+Output: `dist/<guid>.<version>.pbiviz`
+
+### Lint Rules
+- Do NOT use `.html()` — use `.text()` instead (security rule: `powerbi-visuals/no-implied-inner-html`)
+- All fields in pbiviz.json must be non-empty
+
+### Import into Power BI
+1. The `.pbiviz` file must be imported manually via Power BI UI: Edit report → Visualizations → `...` → "Import a visual from a file"
+2. Once imported, the visual's GUID is registered in `publicCustomVisuals` in `report.json`
+3. Then you can add instances via `add_visual_to_page` using the GUID as `visualType`
+
+### Applying the User's Style Guide to Custom Visuals
+When building the visual's rendering code, always use colors from the user's style guide. If no guide exists, use sensible defaults. Apply these patterns:
+
+```typescript
+// Read colors from the style guide or use defaults
+const COLORS = {
+    primary: "#0078D4",    // Override with user's primaryColor
+    secondary: "#E66C37",  // Override with user's dataColors[1]
+    background: "#FFFFFF", // Override with user's backgroundColor
+    text: "#1F1F1F",       // Override with user's textColor
+};
+```
+
+### Common Visual Types to Build
+
+| Type | D3 Approach | Data Roles |
+|------|-------------|------------|
+| Network graph | `d3.forceSimulation` | source, target, weight |
+| Sankey diagram | `d3-sankey` | source, target, value |
+| Timeline | `d3.scaleTime` + rects | category, start, end |
+| Gauge/speedometer | `d3.arc` | value, target |
+| Sparkline card | `d3.line` in small viewport | category, value |
+| Heatmap | `d3.scaleSequential` + rects | row, column, value |

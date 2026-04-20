@@ -5,6 +5,7 @@ A [GitHub Copilot CLI](https://githubnext.com/projects/copilot-cli/) skill for c
 ## Features
 
 - **34 MCP tools** spanning discovery, styling, visual CRUD, page management, validation, persistence, and governance
+- **Custom visual development** — scaffold, build, and package D3.js Power BI custom visuals with `pbiviz` SDK (template included)
 - **Customisable style guide** — ships with a blank `style_guide.example.json` template; create your own brand-specific guide
 - **Auto theme injection** — `dataColors` from the style guide are automatically injected as a Power BI custom theme so charts pick up the palette globally
 - **Conditional formatting** via `FillRule` + `linearGradient2` with `dataViewWildcard` selectors
