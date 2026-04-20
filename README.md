@@ -1,6 +1,9 @@
 # Power BI Creator Skill
 
-A [GitHub Copilot CLI](https://githubnext.com/projects/copilot-cli/) skill for creating, designing, and managing Power BI reports programmatically. Combines the **Power BI Design MCP Server** with a Copilot CLI skill definition so that an AI assistant can build and style PBIR-format reports end-to-end.
+A [GitHub Copilot CLI](https://githubnext.com/projects/copilot-cli/) skill for creating, designing, and managing Power BI reports and semantic models. Combines two MCP servers:
+
+- **Power BI Design MCP Server** (included) — PBIR report styling, visuals, themes, layout
+- **[Power BI Modeling MCP Server](https://github.com/microsoft/powerbi-modeling-mcp)** (Microsoft, via npx) — Semantic model authoring, tables, measures, DAX, relationships
 
 ## Features
 

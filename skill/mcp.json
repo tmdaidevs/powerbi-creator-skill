@@ -4,6 +4,15 @@
       "command": "python",
       "args": ["-m", "src.server.mcp_server"],
       "cwd": "./mcp-server"
+    },
+    "powerbi-modeling-mcp": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@microsoft/powerbi-modeling-mcp@latest",
+        "--start"
+      ]
     }
   }
 }
