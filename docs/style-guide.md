@@ -187,7 +187,7 @@ Defines spacing and positioning constraints that the validation engine enforces.
 
 | File | Description |
 |---|---|
-| `examples/style_guide.anthropic.json` | Warm earth-tone palette optimised for readability; used as the default |
+| `examples/style_guide.example.json` | Blank template with default Power BI colors; copy and customise with your brand |
 | `examples/style_guide.enterprise.json` | Corporate blue palette with stricter layout rules |
 
 Use `get_default_style_guide()` to see which guide is currently active, and `set_default_style_guide(style_guide)` to change it at runtime.

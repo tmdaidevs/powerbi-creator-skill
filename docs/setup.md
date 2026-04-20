@@ -105,7 +105,7 @@ The `mcp.json` file tells Copilot CLI how to launch the MCP server. The `cwd` fi
 Set the `PBIR_MCP_DEFAULT_STYLE_GUIDE_PATH` environment variable (or configure it in `mcp.json`) to point at your preferred style guide JSON:
 
 ```env
-PBIR_MCP_DEFAULT_STYLE_GUIDE_PATH=examples/style_guide.anthropic.json
+PBIR_MCP_DEFAULT_STYLE_GUIDE_PATH=examples/style_guide.example.json
 ```
 
 ### Audit log location

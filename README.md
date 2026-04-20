@@ -5,7 +5,7 @@ A [GitHub Copilot CLI](https://githubnext.com/projects/copilot-cli/) skill for c
 ## Features
 
 - **34 MCP tools** spanning discovery, styling, visual CRUD, page management, validation, persistence, and governance
-- **Anthropic-optimised style guide** — ships with a ready-to-use `style_guide.anthropic.json` that covers data colors, backgrounds, category mapping, and layout rules
+- **Customisable style guide** — ships with a blank `style_guide.example.json` template; create your own brand-specific guide
 - **Auto theme injection** — `dataColors` from the style guide are automatically injected as a Power BI custom theme so charts pick up the palette globally
 - **Conditional formatting** via `FillRule` + `linearGradient2` with `dataViewWildcard` selectors
 - **Overlap & gap validation** — layout rules enforce 20 px gaps/margins; overlapping visuals are blocked before they reach Fabric
@@ -75,7 +75,7 @@ All modes require the `https://analysis.windows.net/powerbi/api/.default` scope.
 
 ## Style Guide
 
-The default style guide lives at [`mcp-server/examples/style_guide.anthropic.json`](mcp-server/examples/style_guide.anthropic.json). It defines:
+The repo includes a blank style guide template at [`mcp-server/examples/style_guide.example.json`](mcp-server/examples/style_guide.example.json). Copy it and customise it with your brand colors. It defines:
 
 - **dataColors** — ordered palette injected as a Power BI custom theme
 - **backgrounds** — page and visual background fills with transparency
