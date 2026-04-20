@@ -1,0 +1,32 @@
+{
+  "theme": {
+    "primaryColor": "#0078D4",
+    "backgroundColor": "#FFFFFF",
+    "textColor": "#1F1F1F"
+  },
+  "typography": {
+    "titleFontFamily": "Segoe UI Semibold",
+    "bodyFontFamily": "Segoe UI",
+    "titleFontSize": 16,
+    "bodyFontSize": 11
+  },
+  "layout": {
+    "pagePadding": 16,
+    "visualSpacing": 12,
+    "cornerRadius": 8
+  },
+  "rules": {
+    "maxVisualsPerPage": 6,
+    "allowCustomVisuals": true,
+    "enforceTopRowKpis": true
+  },
+  "visualRules": {
+    "barChart": {
+      "showBorder": false,
+      "titleAlignment": "left"
+    },
+    "table": {
+      "alternatingRows": false
+    }
+  }
+}

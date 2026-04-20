@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "powerbi-design": {
+      "command": "python",
+      "args": ["-m", "src.server.mcp_server"],
+      "cwd": "./mcp-server",
+      "env": {
+        "PBIR_MCP_DEFAULT_STYLE_GUIDE_PATH": "examples/style_guide.anthropic.json"
+      }
+    }
+  }
+}

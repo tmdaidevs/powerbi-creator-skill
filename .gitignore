@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.env
+backups/
+audit.jsonl
+*.pbiviz
+dist/
+node_modules/
