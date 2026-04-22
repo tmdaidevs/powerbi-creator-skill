@@ -1,0 +1,150 @@
+{
+  "name": "Anthropic Enterprise Style Guide",
+  "version": "1.0.0",
+  "description": "Default style guide for all Power BI dashboards. Based on the Anthropic brand design system.",
+
+  "theme": {
+    "primaryColor": "#D97757",
+    "backgroundColor": "#FAF9F5",
+    "textColor": "#141413",
+    "dataColors": [
+      "#D97757",
+      "#6A9BCC",
+      "#788C5D",
+      "#D4A27F",
+      "#B0AEA5",
+      "#C4956A",
+      "#5B8BA8",
+      "#9AAF7D",
+      "#8B7E74",
+      "#BFA88F"
+    ]
+  },
+
+  "typography": {
+    "titleFontFamily": "Segoe UI Semibold",
+    "bodyFontFamily": "Segoe UI",
+    "titleFontSize": 14,
+    "bodyFontSize": 10
+  },
+
+  "layout": {
+    "pagePadding": 20,
+    "visualSpacing": 20,
+    "cornerRadius": 12
+  },
+
+  "rules": {
+    "maxVisualsPerPage": 12,
+    "allowCustomVisuals": true,
+    "enforceTopRowKpis": true
+  },
+
+  "pageBackground": {
+    "canvas": "#FAF9F5",
+    "wallpaper": "#FAF9F5",
+    "transparency": 0
+  },
+
+  "visualDefaults": {
+    "background": {
+      "color": "#FAF9F5",
+      "transparency": 0
+    },
+    "border": {
+      "show": true,
+      "color": "#E8E6DC",
+      "radius": 12
+    },
+    "padding": {
+      "top": 8,
+      "bottom": 8,
+      "left": 12,
+      "right": 12
+    },
+    "title": {
+      "fontFamily": "Segoe UI Semibold",
+      "fontSize": 12,
+      "fontColor": "#141413"
+    },
+    "visualHeader": {
+      "show": false
+    }
+  },
+
+  "visualRules": {
+    "card": {
+      "background": { "color": "#E8E0D8", "transparency": 20 },
+      "callout": { "fontFamily": "Segoe UI Light", "fontSize": 28, "fontColor": "#D97757" },
+      "categoryLabel": { "fontFamily": "Segoe UI", "fontSize": 10, "fontColor": "#141413" }
+    },
+    "slicer": {
+      "background": { "color": "#E8E6DC", "transparency": 40 }
+    },
+    "tableEx": {
+      "columnHeaders": {
+        "fontColor": "#141413",
+        "backColor": "#E8E6DC",
+        "fontFamily": "Segoe UI Semibold",
+        "fontSize": 11
+      },
+      "values": {
+        "fontColor": "#141413",
+        "backColor": "#FFFFFF",
+        "fontFamily": "Segoe UI",
+        "fontSize": 11
+      },
+      "grid": {
+        "gridVertical": false,
+        "gridHorizontal": true,
+        "gridHorizontalColor": "#E8E6DC",
+        "rowPadding": 6
+      }
+    },
+    "barChart": {
+      "categoryAxis": { "labelColor": "#141413", "fontFamily": "Segoe UI", "fontSize": 10 },
+      "valueAxis": { "labelColor": "#141413", "fontFamily": "Segoe UI", "fontSize": 10, "gridlineColor": "#E8E6DC" }
+    },
+    "donutChart": {
+      "legend": { "show": true, "labelColor": "#141413", "fontFamily": "Segoe UI", "fontSize": 10 },
+      "labels": { "show": true, "color": "#141413", "fontSize": 10 }
+    },
+    "image": {
+      "background": { "show": false },
+      "border": { "show": false },
+      "visualHeader": { "show": false },
+      "title": { "show": false }
+    }
+  },
+
+  "categoryColorBehavior": {
+    "enabled": true,
+    "description": "When dataColors palette is provided, automatically detect visuals with Category query fields and apply per-category colors using PBIR selectors.",
+    "supportedVisualTypes": [
+      "donutChart", "pieChart", "treemap", "funnel",
+      "barChart", "columnChart", "clusteredBarChart", "clusteredColumnChart",
+      "stackedBarChart", "stackedColumnChart", "lineChart", "areaChart"
+    ]
+  },
+
+  "spacingRules": {
+    "gap": 20,
+    "margin": 20,
+    "noOverlaps": true,
+    "minimumGap": 16,
+    "description": "All visuals must maintain consistent 20px gaps. No overlaps allowed. Layout must be validated before any definition update."
+  },
+
+  "palette": {
+    "dark": "#141413",
+    "light": "#FAF9F5",
+    "midGray": "#B0AEA5",
+    "lightGray": "#E8E6DC",
+    "warmGray": "#E8E0D8",
+    "orange": "#D97757",
+    "blue": "#6A9BCC",
+    "green": "#788C5D",
+    "tan": "#D4A27F",
+    "danger": "#C75B3A"
+  }
+}

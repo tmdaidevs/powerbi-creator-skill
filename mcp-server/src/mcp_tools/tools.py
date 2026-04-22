@@ -123,6 +123,10 @@ def add_image_visual(workspace_id: str, report_id: str, page_id_or_name: str, im
     return service.add_image_visual(workspace_id, report_id, page_id_or_name, image_url, position=position, name=name, dry_run=dry_run).model_dump(mode="json")
 
 
+def build_page(workspace_id: str, report_id: str, page_name: str, display_name: str, visuals: list[dict[str, Any]], dry_run: bool = True) -> dict[str, Any]:
+    return service.build_page(workspace_id, report_id, page_name, display_name, visuals, dry_run=dry_run).model_dump(mode="json")
+
+
 def get_default_style_guide() -> dict[str, Any]:
     return service.get_default_style_guide().model_dump(mode="json")
 
@@ -155,9 +159,45 @@ def reorder_pages(workspace_id: str, report_id: str, page_order: list[str], dry_
     return service.reorder_pages(workspace_id, report_id, page_order, dry_run=dry_run).model_dump(mode="json")
 
 
+def full_modernization(workspace_id: str, report_id: str, confirm: bool = False) -> dict[str, Any]:
+    return service.full_modernization(workspace_id, report_id, confirm=confirm).model_dump(mode="json")
+
+
 def inject_custom_theme(workspace_id: str, report_id: str, theme_json: dict[str, Any], theme_name: str = "CustomTheme.json", dry_run: bool = True) -> dict[str, Any]:
     return service.inject_custom_theme(workspace_id, report_id, theme_json, theme_name=theme_name, dry_run=dry_run).model_dump(mode="json")
 
 
 def apply_conditional_format(workspace_id: str, report_id: str, page_id_or_name: str, visual_id_or_name: str, column_field: str, rules: list[dict[str, Any]], target_property: str = "fontColor", dry_run: bool = True) -> dict[str, Any]:
     return service.apply_conditional_format(workspace_id, report_id, page_id_or_name, visual_id_or_name, column_field, rules, target_property=target_property, dry_run=dry_run).model_dump(mode="json")
+
+
+def remove_visual(workspace_id: str, report_id: str, page_id_or_name: str, visual_id_or_name: str, dry_run: bool = True) -> dict[str, Any]:
+    return service.remove_visual(workspace_id, report_id, page_id_or_name, visual_id_or_name, dry_run=dry_run).model_dump(mode="json")
+
+
+def remove_page(workspace_id: str, report_id: str, page_id_or_name: str, dry_run: bool = True) -> dict[str, Any]:
+    return service.remove_page(workspace_id, report_id, page_id_or_name, dry_run=dry_run).model_dump(mode="json")
+
+
+def rename_visual(workspace_id: str, report_id: str, page_id_or_name: str, visual_id_or_name: str, new_name: str, dry_run: bool = True) -> dict[str, Any]:
+    return service.rename_visual(workspace_id, report_id, page_id_or_name, visual_id_or_name, new_name, dry_run=dry_run).model_dump(mode="json")
+
+
+def get_semantic_model_schema(workspace_id: str, report_id: str) -> dict[str, Any]:
+    return service.get_semantic_model_schema(workspace_id, report_id).model_dump(mode="json")
+
+
+def suggest_visuals(workspace_id: str, report_id: str) -> dict[str, Any]:
+    return service.suggest_visuals(workspace_id, report_id).model_dump(mode="json")
+
+
+def auto_layout(visuals: list[dict[str, Any]], page_width: int = 1280, margin: int = 20, gap: int = 20) -> dict[str, Any]:
+    return service.auto_layout(visuals, page_width=page_width, margin=margin, gap=gap).model_dump(mode="json")
+
+
+def compare_reports(workspace_id: str, report_id_a: str, report_id_b: str) -> dict[str, Any]:
+    return service.compare_reports(workspace_id, report_id_a, report_id_b).model_dump(mode="json")
+
+
+def export_report_summary(workspace_id: str, report_id: str) -> dict[str, Any]:
+    return service.export_report_summary(workspace_id, report_id).model_dump(mode="json")

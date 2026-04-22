@@ -678,6 +678,51 @@ class ReportModernizationService:
             next_actions=["Review per-report blockers/warnings before persistence"],
         )
 
+    # Visual types that need Aggregation wrappers on Y-axis columns
+    _CHART_VISUAL_TYPES = {
+        "barChart", "columnChart", "lineChart", "areaChart",
+        "clusteredBarChart", "clusteredColumnChart",
+        "stackedBarChart", "stackedColumnChart",
+        "comboChart", "waterfallChart", "scatterChart",
+        "donutChart", "pieChart", "treemap", "funnel",
+    }
+
+    # Query buckets that hold value/measure fields (need aggregation)
+    _VALUE_BUCKETS = {"Y", "Values", "Y2", "Size", "weight"}
+
+    @staticmethod
+    def _auto_aggregate_query(visual_type: str, query: dict[str, Any]) -> dict[str, Any]:
+        """Wrap raw Column fields in Sum aggregation when used in value buckets of chart visuals.
+
+        Power BI bar/line/area charts require numeric columns on the Y-axis
+        to be wrapped in an Aggregation expression. Measures are left untouched.
+        """
+        if visual_type not in ReportModernizationService._CHART_VISUAL_TYPES:
+            return query
+
+        query_state = query.get("queryState", {})
+        for bucket_name in ReportModernizationService._VALUE_BUCKETS:
+            bucket = query_state.get(bucket_name)
+            if not bucket:
+                continue
+            for proj in bucket.get("projections", []):
+                field = proj.get("field", {})
+                # Skip if already a Measure or Aggregation
+                if "Measure" in field or "Aggregation" in field:
+                    continue
+                # Wrap Column in Sum aggregation
+                if "Column" in field:
+                    col = field.pop("Column")
+                    field["Aggregation"] = {
+                        "Expression": {"Column": col},
+                        "Function": 1,  # Sum
+                    }
+                    # Fix queryRef to reflect aggregation
+                    old_ref = proj.get("queryRef", "")
+                    if old_ref and not old_ref.startswith("Sum("):
+                        proj["queryRef"] = f"Sum({old_ref})"
+        return query
+
     def add_visual_to_page(
         self,
         workspace_id: str,
@@ -714,6 +759,7 @@ class ReportModernizationService:
             "visual": {"visualType": visual_type},
         }
         if query:
+            query = self._auto_aggregate_query(visual_type, query)
             new_visual_payload["visual"]["query"] = query
         if objects:
             new_visual_payload["visual"]["objects"] = objects
@@ -1201,6 +1247,421 @@ class ReportModernizationService:
         self._invalidate_cache(workspace_id, report_id)
         return ToolResponse(success=True, summary="Pages reordered", data={"pageOrder": page_order})
 
+    def build_page(
+        self,
+        workspace_id: str,
+        report_id: str,
+        page_name: str,
+        display_name: str,
+        visuals: list[dict[str, Any]],
+        dry_run: bool = True,
+    ) -> ToolResponse:
+        """Create a new page with multiple visuals in a single operation.
+
+        Each visual in the list should have: name, visualType, position, and query.
+        Automatically validates layout (20px gaps, no overlaps), applies auto-aggregation
+        on Y-axis columns, sets page background, and applies the default style guide.
+
+        Example visual config::
+
+            {
+                "name": "bar_sales",
+                "visualType": "barChart",
+                "position": {"x": 20, "y": 20, "width": 610, "height": 300},
+                "query": {"queryState": {
+                    "Category": {"projections": [...]},
+                    "Y": {"projections": [...]}
+                }},
+                "objects": {},
+                "visualContainerObjects": {}
+            }
+        """
+        report = self._load_report(workspace_id, report_id)
+        warnings_list, blockers = self._validate_report_or_block(report)
+        if blockers:
+            return ToolResponse(success=False, summary="Blocked", blockers=blockers, warnings=warnings_list)
+
+        if any(p.name == page_name for p in report.pages):
+            return ToolResponse(
+                success=False, summary="Page name already exists",
+                blockers=[WarningItem(severity=Severity.BLOCKER, code="duplicate_page_name", message=page_name)],
+            )
+
+        GAP = 20
+
+        # Validate layout: no overlaps, consistent gaps
+        layout_issues: list[str] = []
+        for i, a in enumerate(visuals):
+            ap = a.get("position", {})
+            ax, ay, aw, ah = ap.get("x", 0), ap.get("y", 0), ap.get("width", 0), ap.get("height", 0)
+            for b in visuals[i + 1:]:
+                bp = b.get("position", {})
+                bx, by, bw, bh = bp.get("x", 0), bp.get("y", 0), bp.get("width", 0), bp.get("height", 0)
+                if ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by:
+                    layout_issues.append(f"Overlap: {a.get('name', '?')} <-> {b.get('name', '?')}")
+
+        if layout_issues:
+            return ToolResponse(
+                success=False, summary=f"Layout validation failed: {len(layout_issues)} issues",
+                blockers=[WarningItem(severity=Severity.BLOCKER, code="visual_overlap", message=issue) for issue in layout_issues],
+                next_actions=["Fix visual positions to maintain 20px gaps with no overlaps"],
+            )
+
+        # Calculate page height from visuals
+        max_y2 = max((v.get("position", {}).get("y", 0) + v.get("position", {}).get("height", 0)) for v in visuals) if visuals else 720
+        page_height = max_y2 + GAP
+
+        if dry_run:
+            return ToolResponse(
+                success=True, summary=f"Build page dry-run: '{display_name}' with {len(visuals)} visuals",
+                data={
+                    "dryRun": True, "pageName": page_name, "displayName": display_name,
+                    "visualCount": len(visuals), "pageHeight": page_height,
+                    "visuals": [{"name": v.get("name"), "type": v.get("visualType"), "position": v.get("position")} for v in visuals],
+                },
+            )
+
+        # Build page and visual parts
+        page_schema = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/page/2.1.0/schema.json"
+        visual_schema = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.8.0/schema.json"
+
+        def _color_expr(h: str) -> dict:
+            return {"solid": {"color": {"expr": {"Literal": {"Value": f"'{h}'"}}}}}
+
+        def _lit(v: str) -> dict:
+            return {"expr": {"Literal": {"Value": v}}}
+
+        # Page definition
+        page_payload = {
+            "$schema": page_schema,
+            "name": page_name,
+            "displayName": display_name,
+            "displayOption": "FitToPage",
+            "height": page_height,
+            "width": 1280,
+            "objects": {
+                "background": [{"properties": {"color": _color_expr("#FAF9F5"), "transparency": _lit("0D")}}],
+                "outspace": [{"properties": {"color": _color_expr("#FAF9F5"), "transparency": _lit("0D")}}],
+            },
+        }
+        report.parts.append(ReportPart(
+            name=page_name, path=f"definition/pages/{page_name}/page.json",
+            content_type="application/json", payload=page_payload, payload_type="InlineBase64",
+        ))
+
+        # Update pageOrder
+        for part in report.parts:
+            if part.path.endswith("pages/pages.json") and isinstance(part.payload, dict):
+                order = part.payload.get("pageOrder", [])
+                if page_name not in order:
+                    order.append(page_name)
+                    part.payload["pageOrder"] = order
+                break
+
+        # Visual definitions
+        page_folder = f"definition/pages/{page_name}"
+        for v in visuals:
+            v_name = v.get("name", f"visual_{len(report.parts)}")
+            v_type = v.get("visualType", "card")
+            position = v.get("position", {"x": 20, "y": 20, "z": 0, "width": 400, "height": 300, "tabOrder": 0})
+            if "z" not in position:
+                position["z"] = 0
+            if "tabOrder" not in position:
+                position["tabOrder"] = 0
+            query = v.get("query")
+            objects = v.get("objects", {})
+            vco = v.get("visualContainerObjects", {})
+
+            v_payload: dict[str, Any] = {
+                "$schema": visual_schema,
+                "name": v_name,
+                "position": position,
+                "visual": {"visualType": v_type},
+            }
+
+            if query:
+                query = self._auto_aggregate_query(v_type, query)
+                v_payload["visual"]["query"] = query
+            if objects:
+                v_payload["visual"]["objects"] = objects
+            if vco:
+                v_payload["visual"]["visualContainerObjects"] = vco
+
+            report.parts.append(ReportPart(
+                name=v_name, path=f"{page_folder}/visuals/{v_name}/visual.json",
+                content_type="application/json", payload=v_payload, payload_type="InlineBase64",
+            ))
+
+        # Write definition
+        definition_parts = self._report_to_definition_parts(report)
+        try:
+            result = self.api_client.update_report_definition(workspace_id, report_id, definition_parts)
+            if result.get("status") == "pending" and result.get("location"):
+                state = self.api_client.wait_for_operation(result["location"])
+                result = {"status": state.status}
+        except FabricApiError as exc:
+            return ToolResponse(
+                success=False, summary="Failed to build page",
+                blockers=[WarningItem(severity=Severity.BLOCKER, code=exc.code.value, message=str(exc))],
+            )
+
+        self._invalidate_cache(workspace_id, report_id)
+        self._auto_apply_style(workspace_id, report_id)
+        self._audit_log("build_page", workspace_id, report_id, {
+            "pageName": page_name, "displayName": display_name, "visualCount": len(visuals),
+        })
+
+        return ToolResponse(
+            success=True,
+            summary=f"Page '{display_name}' created with {len(visuals)} visuals",
+            data={"pageName": page_name, "visualCount": len(visuals), "pageHeight": page_height,
+                  "status": result.get("status", "ok")},
+        )
+
+    def full_modernization(
+        self,
+        workspace_id: str,
+        report_id: str,
+        confirm: bool = False,
+    ) -> ToolResponse:
+        """Full modernization: assess a report, generate an improvement plan, and optionally execute it.
+
+        Phase 1 (confirm=False): Analyze the report and semantic model, identify all improvements,
+        return a detailed plan with proposed changes.
+
+        Phase 2 (confirm=True): Execute the plan — backup, apply style guide, rename visuals,
+        suggest and add missing visuals, apply conditional formatting, validate layout.
+        """
+        # ── Phase 1: Assessment ──────────────────────────────────────────
+        report = self._load_report(workspace_id, report_id)
+
+        # Structure analysis
+        structure = self.analyze_report_structure(workspace_id, report_id)
+        score_data = structure.data.get("modernizationScore", {})
+
+        # Schema analysis
+        schema_resp = self.get_semantic_model_schema(workspace_id, report_id)
+        schema = schema_resp.data if schema_resp.success else {}
+
+        # Visual suggestions
+        suggestions_resp = self.suggest_visuals(workspace_id, report_id)
+        suggestions = suggestions_resp.data.get("suggestions", []) if suggestions_resp.success else []
+
+        # Current report summary
+        summary_resp = self.export_report_summary(workspace_id, report_id)
+        current_summary = summary_resp.data if summary_resp.success else {}
+
+        # Check for style guide
+        style_guide_resp = self.get_default_style_guide()
+        has_style_guide = style_guide_resp.success
+
+        # ── Build the modernization plan ─────────────────────────────────
+        plan: dict[str, Any] = {
+            "currentState": {
+                "score": score_data.get("score", 0),
+                "classification": score_data.get("classification", "unknown"),
+                "format": report.format.value,
+                "pageCount": len(report.pages),
+                "totalVisuals": sum(len(p.visuals) for p in report.pages),
+            },
+            "actions": [],
+        }
+
+        # Action 1: Backup
+        plan["actions"].append({
+            "id": "backup",
+            "phase": "safety",
+            "description": "Create backup of current report definition",
+            "priority": "critical",
+        })
+
+        # Action 2: Style guide
+        if has_style_guide:
+            plan["actions"].append({
+                "id": "apply_style",
+                "phase": "styling",
+                "description": "Apply default style guide (colors, backgrounds, typography, theme injection)",
+                "priority": "high",
+            })
+
+        # Action 3: Rename hash-named visuals
+        hash_visuals = []
+        for page in report.pages:
+            for v in page.visuals:
+                name = v.name or v.id
+                # Detect hash-like names (hex strings longer than 16 chars)
+                if len(name) > 16 and all(c in "0123456789abcdef" for c in name):
+                    hash_visuals.append({"page": page.name, "visual": name, "type": v.visual_type})
+        if hash_visuals:
+            plan["actions"].append({
+                "id": "rename_visuals",
+                "phase": "cleanup",
+                "description": f"Rename {len(hash_visuals)} hash-named visuals to meaningful names",
+                "priority": "medium",
+                "details": hash_visuals,
+            })
+
+        # Action 4: Missing measures (check schema for common patterns)
+        missing_measures: list[dict[str, str]] = []
+        tables = schema.get("tables", [])
+        for table in tables:
+            columns = [c["name"] for c in table.get("columns", []) if not c.get("isHidden")]
+            measures = [m["name"] for m in table.get("measures", []) if not m.get("isHidden")]
+            measure_names_lower = [m.lower() for m in measures]
+
+            # Suggest common measures if missing
+            if any("event" in c.lower() or "count" in c.lower() for c in columns):
+                if not any("total" in m for m in measure_names_lower):
+                    missing_measures.append({"table": table["name"], "measure": "Total Count", "dax": f"COUNTROWS('{table['name']}')", "reason": "Common aggregate measure"})
+            if any("fail" in c.lower() or "error" in c.lower() for c in columns):
+                if not any("rate" in m or "pct" in m or "percent" in m for m in measure_names_lower):
+                    missing_measures.append({"table": table["name"], "measure": "Failure Rate %", "dax": f"DIVIDE([Failed Events], [Total Events], 0) * 100", "reason": "Key risk metric"})
+
+        if missing_measures:
+            plan["actions"].append({
+                "id": "add_measures",
+                "phase": "semantic_model",
+                "description": f"Suggest {len(missing_measures)} new measures for the semantic model",
+                "priority": "medium",
+                "details": missing_measures,
+                "note": "Requires powerbi-modeling-mcp server to execute",
+            })
+
+        # Action 5: Missing metadata (columns without descriptions)
+        columns_without_desc: list[dict[str, str]] = []
+        for table in tables:
+            for col in table.get("columns", []):
+                if not col.get("isHidden"):
+                    columns_without_desc.append({"table": table["name"], "column": col["name"]})
+        if columns_without_desc:
+            plan["actions"].append({
+                "id": "add_metadata",
+                "phase": "semantic_model",
+                "description": f"{len(columns_without_desc)} columns could benefit from descriptions and synonyms",
+                "priority": "low",
+                "note": "Requires powerbi-modeling-mcp server to execute",
+            })
+
+        # Action 6: Suggest missing visuals
+        # Compare existing visual types against suggestions
+        existing_types = set()
+        existing_fields = set()
+        for page in report.pages:
+            for v in page.visuals:
+                existing_types.add(v.visual_type)
+                query_state = v.raw.get("visual", {}).get("query", {}).get("queryState", {})
+                for bucket in query_state.values():
+                    for proj in bucket.get("projections", []):
+                        existing_fields.add(proj.get("queryRef", ""))
+
+        new_suggestions = []
+        for s in suggestions:
+            field_key = f"{s.get('entity', '')}.{s.get('category', s.get('value', ''))}"
+            if field_key not in existing_fields or s.get("visualType") not in existing_types:
+                new_suggestions.append(s)
+
+        if new_suggestions:
+            plan["actions"].append({
+                "id": "add_visuals",
+                "phase": "report_design",
+                "description": f"{len(new_suggestions)} additional visuals suggested based on available data",
+                "priority": "medium",
+                "details": new_suggestions[:10],  # Cap at 10 suggestions
+            })
+
+        # Action 7: Layout validation
+        layout_issues = []
+        for page in report.pages:
+            positioned = [(v, v.x, v.y, v.width, v.height) for v in page.visuals
+                         if v.x is not None and v.y is not None and v.width is not None and v.height is not None]
+            for i, (va, ax, ay, aw, ah) in enumerate(positioned):
+                for vb, bx, by, bw, bh in positioned[i+1:]:
+                    if ax < bx + bw and ax + aw > bx and ay < by + bh and ay + ah > by:
+                        layout_issues.append(f"Overlap: {va.name or va.id} <-> {vb.name or vb.id} on {page.name}")
+        if layout_issues:
+            plan["actions"].append({
+                "id": "fix_layout",
+                "phase": "report_design",
+                "description": f"Fix {len(layout_issues)} layout issues",
+                "priority": "high",
+                "details": layout_issues,
+            })
+
+        plan["totalActions"] = len(plan["actions"])
+        plan["phases"] = list(set(a["phase"] for a in plan["actions"]))
+
+        # ── Phase 2: Execute (if confirmed) ──────────────────────────────
+        if not confirm:
+            return ToolResponse(
+                success=True,
+                summary=f"Modernization plan: {plan['totalActions']} actions across {len(plan['phases'])} phases",
+                data={"plan": plan, "confirm": False},
+                next_actions=["Review the plan", "Run full_modernization with confirm=true to execute"],
+            )
+
+        # Execute the plan
+        executed: list[dict[str, Any]] = []
+
+        # 1. Backup
+        try:
+            backup_resp = self.backup_report_definition(workspace_id, report_id)
+            executed.append({"action": "backup", "success": backup_resp.success, "path": backup_resp.data.get("backupPath")})
+        except Exception as exc:
+            executed.append({"action": "backup", "success": False, "error": str(exc)})
+
+        # 2. Apply style guide
+        if has_style_guide:
+            try:
+                style_resp = self.apply_full_style(workspace_id, report_id, dry_run=False)
+                executed.append({"action": "apply_style", "success": style_resp.success, "changes": style_resp.data.get("changeCount", 0)})
+            except Exception as exc:
+                executed.append({"action": "apply_style", "success": False, "error": str(exc)})
+
+        # 3. Rename hash-named visuals
+        renamed = 0
+        for hv in hash_visuals:
+            visual_type = hv.get("type", "visual")
+            # Generate a meaningful name from visual type + index
+            new_name = f"{visual_type}_{renamed + 1}"
+            try:
+                rename_resp = self.rename_visual(workspace_id, report_id, hv["page"], hv["visual"], new_name, dry_run=False)
+                if rename_resp.success:
+                    renamed += 1
+            except Exception:
+                pass
+        if hash_visuals:
+            executed.append({"action": "rename_visuals", "success": True, "renamed": renamed, "total": len(hash_visuals)})
+
+        # 4. Fix layout issues
+        if layout_issues:
+            for page in report.pages:
+                try:
+                    self.rearrange_page_visuals(workspace_id, report_id, page.name, {}, dry_run=False)
+                except Exception:
+                    pass
+            executed.append({"action": "fix_layout", "success": True, "pagesFixed": len(report.pages)})
+
+        # 5. Log modernization
+        self._audit_log("full_modernization", workspace_id, report_id, {
+            "actionsPlanned": plan["totalActions"],
+            "actionsExecuted": len(executed),
+            "score_before": score_data.get("score", 0),
+        })
+
+        return ToolResponse(
+            success=True,
+            summary=f"Modernization complete: {len(executed)} actions executed",
+            data={
+                "plan": plan,
+                "executed": executed,
+                "note": "Semantic model changes (measures, metadata, synonyms) require the powerbi-modeling-mcp server",
+            },
+            next_actions=[
+                "Run analyze_report_structure to verify improvements",
+                "Use powerbi-modeling-mcp to apply suggested measures and metadata",
+            ],
+        )
+
     def inject_custom_theme(
         self,
         workspace_id: str,
@@ -1492,3 +1953,366 @@ class ReportModernizationService:
             summary=f"Conditional format applied: {len(rules)} rules on {column_field}",
             data={"status": result.get("status")},
         )
+
+    # ------------------------------------------------------------------
+    # remove_visual
+    # ------------------------------------------------------------------
+
+    def remove_visual(self, workspace_id: str, report_id: str, page_id_or_name: str, visual_id_or_name: str, dry_run: bool = True) -> ToolResponse:
+        """Remove a visual from a page."""
+        report = self._load_report(workspace_id, report_id)
+        page = self._resolve_page(report, page_id_or_name)
+        if not page:
+            return ToolResponse(success=False, summary="Page not found", blockers=[WarningItem(severity=Severity.BLOCKER, code="page_not_found", message=page_id_or_name)])
+        visual = self._resolve_visual(page, visual_id_or_name)
+        if not visual:
+            return ToolResponse(success=False, summary="Visual not found", blockers=[WarningItem(severity=Severity.BLOCKER, code="visual_not_found", message=visual_id_or_name)])
+
+        if dry_run:
+            return ToolResponse(success=True, summary=f"Would remove visual '{visual.name or visual.id}' from page '{page.name}'", data={"dryRun": True, "visual": visual.name or visual.id, "page": page.name})
+
+        # Remove the visual's part
+        visual_name = visual.name or visual.id
+        report.parts = [p for p in report.parts if not (p.path.endswith("/visual.json") and f"/visuals/{visual_name}/" in p.path)]
+        page.visuals = [v for v in page.visuals if (v.name or v.id) != visual_name]
+
+        definition_parts = self._report_to_definition_parts(report)
+        try:
+            result = self.api_client.update_report_definition(workspace_id, report_id, definition_parts)
+            if result.get("status") == "pending" and result.get("location"):
+                state = self.api_client.wait_for_operation(result["location"])
+                result = {"status": state.status}
+        except FabricApiError as exc:
+            return ToolResponse(success=False, summary="Failed to remove visual", blockers=[WarningItem(severity=Severity.BLOCKER, code=exc.code.value, message=str(exc))])
+
+        self._invalidate_cache(workspace_id, report_id)
+        self._audit_log("remove_visual", workspace_id, report_id, {"visual": visual_name, "page": page.name})
+        return ToolResponse(success=True, summary=f"Visual '{visual_name}' removed from page '{page.name}'", data={"status": result.get("status", "ok")})
+
+    # ------------------------------------------------------------------
+    # remove_page
+    # ------------------------------------------------------------------
+
+    def remove_page(self, workspace_id: str, report_id: str, page_id_or_name: str, dry_run: bool = True) -> ToolResponse:
+        """Remove a page and all its visuals from the report."""
+        report = self._load_report(workspace_id, report_id)
+        page = self._resolve_page(report, page_id_or_name)
+        if not page:
+            return ToolResponse(success=False, summary="Page not found", blockers=[WarningItem(severity=Severity.BLOCKER, code="page_not_found", message=page_id_or_name)])
+
+        if len(report.pages) <= 1:
+            return ToolResponse(success=False, summary="Cannot remove the last page", blockers=[WarningItem(severity=Severity.BLOCKER, code="last_page", message="Reports must have at least one page")])
+
+        if dry_run:
+            return ToolResponse(success=True, summary=f"Would remove page '{page.name}' with {len(page.visuals)} visuals", data={"dryRun": True, "page": page.name, "visualCount": len(page.visuals)})
+
+        # Remove all parts under this page's folder
+        page_folder_prefix = f"definition/pages/{page.name}/"
+        report.parts = [p for p in report.parts if not p.path.startswith(page_folder_prefix)]
+        # Also remove the page.json itself
+        report.parts = [p for p in report.parts if p.path != f"definition/pages/{page.name}/page.json"]
+        report.pages = [p for p in report.pages if p.name != page.name]
+
+        # Update pageOrder
+        for part in report.parts:
+            if part.path.endswith("pages/pages.json") and isinstance(part.payload, dict):
+                order = part.payload.get("pageOrder", [])
+                part.payload["pageOrder"] = [n for n in order if n != page.name]
+                break
+
+        definition_parts = self._report_to_definition_parts(report)
+        try:
+            result = self.api_client.update_report_definition(workspace_id, report_id, definition_parts)
+            if result.get("status") == "pending" and result.get("location"):
+                state = self.api_client.wait_for_operation(result["location"])
+                result = {"status": state.status}
+        except FabricApiError as exc:
+            return ToolResponse(success=False, summary="Failed to remove page", blockers=[WarningItem(severity=Severity.BLOCKER, code=exc.code.value, message=str(exc))])
+
+        self._invalidate_cache(workspace_id, report_id)
+        self._audit_log("remove_page", workspace_id, report_id, {"page": page.name})
+        return ToolResponse(success=True, summary=f"Page '{page.name}' removed", data={"status": result.get("status", "ok")})
+
+    # ------------------------------------------------------------------
+    # rename_visual
+    # ------------------------------------------------------------------
+
+    def rename_visual(self, workspace_id: str, report_id: str, page_id_or_name: str, visual_id_or_name: str, new_name: str, dry_run: bool = True) -> ToolResponse:
+        """Rename a visual (updates the name field in visual.json)."""
+        report = self._load_report(workspace_id, report_id)
+        page = self._resolve_page(report, page_id_or_name)
+        if not page:
+            return ToolResponse(success=False, summary="Page not found", blockers=[WarningItem(severity=Severity.BLOCKER, code="page_not_found", message=page_id_or_name)])
+        visual = self._resolve_visual(page, visual_id_or_name)
+        if not visual:
+            return ToolResponse(success=False, summary="Visual not found", blockers=[WarningItem(severity=Severity.BLOCKER, code="visual_not_found", message=visual_id_or_name)])
+
+        old_name = visual.name or visual.id
+        if dry_run:
+            return ToolResponse(success=True, summary=f"Would rename '{old_name}' to '{new_name}'", data={"dryRun": True, "oldName": old_name, "newName": new_name})
+
+        # Update the visual's payload name field
+        for part in report.parts:
+            if not part.path.endswith("/visual.json") or not isinstance(part.payload, dict):
+                continue
+            if part.payload.get("name") == old_name:
+                part.payload["name"] = new_name
+                break
+
+        visual.name = new_name
+        visual.id = new_name
+
+        definition_parts = self._report_to_definition_parts(report)
+        try:
+            result = self.api_client.update_report_definition(workspace_id, report_id, definition_parts)
+            if result.get("status") == "pending" and result.get("location"):
+                state = self.api_client.wait_for_operation(result["location"])
+                result = {"status": state.status}
+        except FabricApiError as exc:
+            return ToolResponse(success=False, summary="Failed to rename visual", blockers=[WarningItem(severity=Severity.BLOCKER, code=exc.code.value, message=str(exc))])
+
+        self._invalidate_cache(workspace_id, report_id)
+        return ToolResponse(success=True, summary=f"Visual renamed: '{old_name}' \u2192 '{new_name}'", data={"status": result.get("status", "ok")})
+
+    # ------------------------------------------------------------------
+    # get_semantic_model_schema
+    # ------------------------------------------------------------------
+
+    def get_semantic_model_schema(self, workspace_id: str, report_id: str) -> ToolResponse:
+        """Get the semantic model schema (tables, columns, measures) for a report."""
+        dataset_id = self._resolve_dataset_id(workspace_id, report_id)
+        if not dataset_id:
+            return ToolResponse(success=False, summary="Could not resolve dataset ID", blockers=[WarningItem(severity=Severity.BLOCKER, code="dataset_not_found", message="No datasetId in report metadata")])
+
+        tables_data: list[dict[str, Any]] = []
+        try:
+            # Get tables
+            table_rows = self.api_client.execute_dax_query(workspace_id, dataset_id, "EVALUATE INFO.TABLES()")
+            # Get columns
+            col_rows = self.api_client.execute_dax_query(workspace_id, dataset_id, "EVALUATE INFO.COLUMNS()")
+            # Get measures
+            measure_rows = self.api_client.execute_dax_query(workspace_id, dataset_id, "EVALUATE INFO.MEASURES()")
+
+            # Build table map
+            table_map: dict[int, dict[str, Any]] = {}
+            for t in table_rows:
+                tid = t.get("[ID]")
+                tname = t.get("[Name]", "")
+                if t.get("[IsHidden]") or t.get("[IsPrivate]"):
+                    continue
+                table_map[tid] = {"name": tname, "columns": [], "measures": []}
+
+            # Add columns
+            for c in col_rows:
+                tid = c.get("[TableID]")
+                if tid not in table_map:
+                    continue
+                cname = c.get("[ExplicitName]") or c.get("[InferredName]") or ""
+                if cname.startswith("RowNumber-") or c.get("[IsHidden]"):
+                    continue
+                ctype = c.get("[Type]", 0)
+                type_label = "calculated" if ctype == 2 else "column"
+                table_map[tid]["columns"].append({"name": cname, "type": type_label, "isHidden": bool(c.get("[IsHidden]"))})
+
+            # Add measures
+            for m in measure_rows:
+                tid = m.get("[TableID]")
+                if tid not in table_map:
+                    continue
+                table_map[tid]["measures"].append({"name": m.get("[Name]", ""), "expression": m.get("[Expression]", ""), "isHidden": bool(m.get("[IsHidden]"))})
+
+            tables_data = list(table_map.values())
+        except FabricApiError as exc:
+            return ToolResponse(success=False, summary="Failed to query schema", blockers=[WarningItem(severity=Severity.BLOCKER, code=exc.code.value, message=str(exc))])
+
+        return ToolResponse(success=True, summary=f"Schema: {len(tables_data)} tables", data={"datasetId": dataset_id, "tables": tables_data})
+
+    # ------------------------------------------------------------------
+    # suggest_visuals
+    # ------------------------------------------------------------------
+
+    def suggest_visuals(self, workspace_id: str, report_id: str) -> ToolResponse:
+        """Suggest visuals based on the semantic model schema \u2014 maps data types and cardinality to chart types."""
+        schema_resp = self.get_semantic_model_schema(workspace_id, report_id)
+        if not schema_resp.success:
+            return schema_resp
+
+        suggestions: list[dict[str, Any]] = []
+        tables = schema_resp.data.get("tables", [])
+        for table in tables:
+            columns = [c for c in table.get("columns", []) if not c.get("isHidden")]
+            measures = [m for m in table.get("measures", []) if not m.get("isHidden")]
+            entity = table["name"]
+
+            # Date columns \u2192 line chart
+            date_cols = [c for c in columns if any(kw in c["name"].lower() for kw in ("date", "time", "created", "modified", "seen"))]
+            if date_cols and measures:
+                suggestions.append({"visualType": "lineChart", "reason": "Time-series trend", "category": date_cols[0]["name"], "value": measures[0]["name"], "entity": entity})
+
+            # String columns with measures \u2192 bar chart
+            str_cols = [c for c in columns if c["type"] == "column" and c["name"] not in [d["name"] for d in date_cols] and not any(kw in c["name"].lower() for kw in ("id", "identity", "correlation"))]
+            for col in str_cols[:2]:
+                if measures:
+                    suggestions.append({"visualType": "barChart", "reason": f"Distribution by {col['name']}", "category": col["name"], "value": measures[0]["name"], "entity": entity})
+
+            # Status-like columns \u2192 donut chart
+            status_cols = [c for c in columns if any(kw in c["name"].lower() for kw in ("status", "type", "category", "source"))]
+            for col in status_cols[:1]:
+                if measures:
+                    suggestions.append({"visualType": "donutChart", "reason": f"Breakdown by {col['name']}", "category": col["name"], "value": measures[0]["name"], "entity": entity})
+
+            # Each measure \u2192 card
+            for m in measures[:4]:
+                suggestions.append({"visualType": "card", "reason": f"KPI: {m['name']}", "value": m["name"], "entity": entity})
+
+            # If there are many columns \u2192 table
+            if len(columns) >= 4:
+                suggestions.append({"visualType": "tableEx", "reason": f"Detail table for {entity}", "columns": [c["name"] for c in columns[:8]], "entity": entity})
+
+        return ToolResponse(success=True, summary=f"{len(suggestions)} visual suggestions", data={"suggestions": suggestions})
+
+    # ------------------------------------------------------------------
+    # auto_layout
+    # ------------------------------------------------------------------
+
+    def auto_layout(self, visuals: list[dict[str, Any]], page_width: int = 1280, margin: int = 20, gap: int = 20) -> ToolResponse:
+        """Compute optimal grid positions for a list of visuals. Returns visuals with computed positions.
+
+        Each visual should have: name, visualType, and optionally preferredHeight/preferredWidth.
+        """
+        usable_w = page_width - 2 * margin
+        positioned: list[dict[str, Any]] = []
+
+        # Group visuals by type: cards go in row 1, charts in subsequent rows
+        cards = [v for v in visuals if v.get("visualType") in ("card", "slicer")]
+        charts = [v for v in visuals if v.get("visualType") not in ("card", "slicer", "tableEx")]
+        tables = [v for v in visuals if v.get("visualType") == "tableEx"]
+
+        current_y = margin
+
+        # Row 1: Cards \u2014 distribute evenly
+        if cards:
+            n = len(cards)
+            card_w = (usable_w - (n - 1) * gap) // n
+            for idx, c in enumerate(cards):
+                c["position"] = {"x": margin + idx * (card_w + gap), "y": current_y, "z": idx, "width": card_w, "height": 120, "tabOrder": idx * 1000}
+                positioned.append(c)
+            current_y += 120 + gap
+
+        # Charts: 2 per row
+        for idx in range(0, len(charts), 2):
+            row_charts = charts[idx:idx + 2]
+            if len(row_charts) == 2:
+                half_w = (usable_w - gap) // 2
+                for j, ch in enumerate(row_charts):
+                    h = ch.get("preferredHeight", 300)
+                    ch["position"] = {"x": margin + j * (half_w + gap), "y": current_y, "z": 0, "width": half_w, "height": h, "tabOrder": (idx + j) * 1000 + 3000}
+                    positioned.append(ch)
+                current_y += max(ch.get("preferredHeight", 300) for ch in row_charts) + gap
+            else:
+                ch = row_charts[0]
+                h = ch.get("preferredHeight", 300)
+                ch["position"] = {"x": margin, "y": current_y, "z": 0, "width": usable_w, "height": h, "tabOrder": idx * 1000 + 3000}
+                positioned.append(ch)
+                current_y += h + gap
+
+        # Tables: full width
+        for idx, t in enumerate(tables):
+            h = t.get("preferredHeight", 200)
+            t["position"] = {"x": margin, "y": current_y, "z": 0, "width": usable_w, "height": h, "tabOrder": idx * 1000 + 8000}
+            positioned.append(t)
+            current_y += h + gap
+
+        page_height = current_y + margin - gap if positioned else 720
+
+        return ToolResponse(success=True, summary=f"Layout computed: {len(positioned)} visuals in {page_height}px height", data={"visuals": positioned, "pageHeight": page_height, "pageWidth": page_width})
+
+    # ------------------------------------------------------------------
+    # compare_reports
+    # ------------------------------------------------------------------
+
+    def compare_reports(self, workspace_id: str, report_id_a: str, report_id_b: str) -> ToolResponse:
+        """Compare two reports side-by-side \u2014 structure, visuals, and style differences."""
+        report_a = self._load_report(workspace_id, report_id_a)
+        report_b = self._load_report(workspace_id, report_id_b)
+
+        comparison = {
+            "reportA": {"id": report_id_a, "format": report_a.format.value, "pageCount": len(report_a.pages), "visualCount": sum(len(p.visuals) for p in report_a.pages)},
+            "reportB": {"id": report_id_b, "format": report_b.format.value, "pageCount": len(report_b.pages), "visualCount": sum(len(p.visuals) for p in report_b.pages)},
+            "differences": [],
+        }
+
+        # Compare page counts
+        if len(report_a.pages) != len(report_b.pages):
+            comparison["differences"].append({"type": "pageCount", "a": len(report_a.pages), "b": len(report_b.pages)})
+
+        # Compare page names
+        pages_a = {p.name for p in report_a.pages}
+        pages_b = {p.name for p in report_b.pages}
+        only_a = pages_a - pages_b
+        only_b = pages_b - pages_a
+        if only_a:
+            comparison["differences"].append({"type": "pagesOnlyInA", "pages": list(only_a)})
+        if only_b:
+            comparison["differences"].append({"type": "pagesOnlyInB", "pages": list(only_b)})
+
+        # Compare visual types on shared pages
+        for page_a in report_a.pages:
+            page_b = next((p for p in report_b.pages if p.name == page_a.name), None)
+            if not page_b:
+                continue
+            types_a = sorted(v.visual_type for v in page_a.visuals)
+            types_b = sorted(v.visual_type for v in page_b.visuals)
+            if types_a != types_b:
+                comparison["differences"].append({"type": "visualTypes", "page": page_a.name, "a": types_a, "b": types_b})
+
+        return ToolResponse(success=True, summary=f"{len(comparison['differences'])} differences found", data=comparison)
+
+    # ------------------------------------------------------------------
+    # export_report_summary
+    # ------------------------------------------------------------------
+
+    def export_report_summary(self, workspace_id: str, report_id: str) -> ToolResponse:
+        """Generate a comprehensive summary of a report's structure, visuals, and data bindings."""
+        report = self._load_report(workspace_id, report_id)
+        metadata = {}
+        try:
+            metadata = self.api_client.get_report_metadata(workspace_id, report_id)
+        except Exception:
+            pass
+
+        pages_summary = []
+        for page in report.pages:
+            visuals_summary = []
+            for v in page.visuals:
+                query_fields = []
+                query_state = v.raw.get("visual", {}).get("query", {}).get("queryState", {})
+                for bucket_name, bucket in query_state.items():
+                    for proj in bucket.get("projections", []):
+                        qref = proj.get("queryRef", "")
+                        if qref:
+                            query_fields.append({"bucket": bucket_name, "field": qref})
+                visuals_summary.append({
+                    "name": v.name or v.id,
+                    "type": v.visual_type,
+                    "position": {"x": v.x, "y": v.y, "width": v.width, "height": v.height},
+                    "dataBindings": query_fields,
+                })
+            pages_summary.append({
+                "name": page.name,
+                "displayName": page.display_name,
+                "visualCount": len(page.visuals),
+                "visuals": visuals_summary,
+            })
+
+        summary = {
+            "reportId": report_id,
+            "reportName": metadata.get("name", ""),
+            "format": report.format.value,
+            "pageCount": len(report.pages),
+            "totalVisuals": sum(len(p.visuals) for p in report.pages),
+            "bookmarkCount": len(report.bookmarks),
+            "pages": pages_summary,
+        }
+
+        return ToolResponse(success=True, summary=f"Report summary: {len(report.pages)} pages, {summary['totalVisuals']} visuals", data=summary)
