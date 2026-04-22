@@ -1,0 +1,28 @@
+{
+  "name": "My Style Guide",
+  "version": "1.0.0",
+  "description": "Custom style guide for Power BI dashboards. Edit with your brand colors.",
+  "theme": {
+    "primaryColor": "#0078D4",
+    "backgroundColor": "#FFFFFF",
+    "textColor": "#1F1F1F",
+    "dataColors": ["#0078D4", "#E66C37", "#2CA02C", "#D64550", "#A855F7", "#F5A623", "#107C10", "#5B5FC7"]
+  },
+  "typography": {
+    "titleFontFamily": "Segoe UI Semibold",
+    "bodyFontFamily": "Segoe UI",
+    "titleFontSize": 14,
+    "bodyFontSize": 10
+  },
+  "layout": {
+    "pagePadding": 20,
+    "visualSpacing": 20,
+    "cornerRadius": 8
+  },
+  "rules": {
+    "maxVisualsPerPage": 12,
+    "allowCustomVisuals": true,
+    "enforceTopRowKpis": false
+  },
+  "visualRules": {}
+}
